@@ -2,12 +2,12 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 export const maxDuration = 60;
 
-// Models to try in order of preference
+// Models to try in order of preference (Nano Banana Pro first for best quality)
 const IMAGE_MODELS = [
+  'gemini-3-pro-image-preview',      // Nano Banana Pro - best quality
+  'gemini-2.5-flash-image',          // Nano Banana - fast & efficient
   'gemini-2.0-flash-exp-image-generation',
-  'gemini-2.0-flash-exp',
-  'gemini-2.0-flash-thinking-exp',
-  'gemini-1.5-pro'
+  'gemini-2.0-flash-exp'
 ];
 
 async function tryGenerateWithModel(genAI, modelName, prompt, imageBase64) {
