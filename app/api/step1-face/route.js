@@ -11,14 +11,22 @@ export async function POST(request) {
     }
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
-    const prompt = `A photorealistic 85mm f/1.4 RAW portrait of this exact person,
-same identity, same hair, same facial proportions. Soft studio lighting,
+    // Use Gemini 2.0 Flash with image generation capability
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.0-flash-exp',
+      generationConfig: {
+        responseModalities: ['Text', 'Image']
+      }
+    });
+
+    const prompt = `Generate a photorealistic 85mm f/1.4 RAW portrait of this exact person.
+Keep the same identity, same hair, same facial proportions. Apply soft studio lighting,
 clean gradient background, high micro-detail with real skin texture and pores.
 Preserve facial structure accurately. Professional headshot quality.
 
-CRITICAL: The output must look EXACTLY like this person - same face, same features.`;
+CRITICAL: The output image must look EXACTLY like this person - same face, same features.
+Generate a new high-quality portrait image.`;
 
     const result = await model.generateContent([
       prompt,
@@ -45,6 +53,16 @@ CRITICAL: The output must look EXACTLY like this person - same face, same featur
           });
         }
       }
+
+      // If only text response, return original image with note
+      const textPart = parts.find(p => p.text);
+      return Response.json({
+        success: true,
+        image: imageBase64,
+        step: 1,
+        message: 'Using original image',
+        note: textPart?.text || 'Image generation not available with current API access'
+      });
     }
 
     // If no image generated, return original with message
@@ -56,6 +74,14 @@ CRITICAL: The output must look EXACTLY like this person - same face, same featur
     });
 
   } catch (error) {
+    // If model not found, try fallback
+    if (error.message?.includes('not found') || error.message?.includes('404')) {
+      return Response.json({
+        success: false,
+        error: 'Image generation model not available. Please ensure your API key has access to gemini-2.0-flash-exp with image generation.',
+        suggestion: 'Try enabling Gemini 2.0 Flash experimental features in Google AI Studio'
+      }, { status: 400 });
+    }
     return Response.json({ success: false, error: error.message }, { status: 500 });
   }
 }

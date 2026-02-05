@@ -11,7 +11,14 @@ export async function POST(request) {
     }
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+
+    // Use Gemini 2.0 Flash with image generation capability
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.0-flash-exp',
+      generationConfig: {
+        responseModalities: ['Text', 'Image']
+      }
+    });
 
     const upscaledImages = [];
 
@@ -28,7 +35,7 @@ REQUIREMENTS:
 - Maintain EXACT same identity and expression
 - Do NOT change the person's appearance
 
-OUTPUT: Highest possible resolution, professional photography quality.`;
+OUTPUT: Generate a highest possible resolution, professional photography quality version of this image.`;
 
         const result = await model.generateContent([
           prompt,

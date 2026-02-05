@@ -24,14 +24,21 @@ export async function POST(request) {
     }
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+
+    // Use Gemini 2.0 Flash with image generation capability
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.0-flash-exp',
+      generationConfig: {
+        responseModalities: ['Text', 'Image']
+      }
+    });
 
     const variationsToUse = VARIATIONS.slice(0, Math.min(count, 10));
     const generatedImages = [];
 
     for (const variation of variationsToUse) {
       try {
-        const prompt = `Create a photorealistic portrait of this EXACT person with these specifications:
+        const prompt = `Generate a photorealistic portrait of this EXACT person with these specifications:
 
 IDENTITY: Must look EXACTLY like the reference - same face, same features, same identity.
 
@@ -63,7 +70,7 @@ Generate a new image maintaining perfect identity match.`;
         }
 
         // Small delay between requests
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 1000));
 
       } catch (err) {
         console.error(`Error generating ${variation.name}:`, err.message);
@@ -88,6 +95,14 @@ Generate a new image maintaining perfect identity match.`;
     });
 
   } catch (error) {
+    // If model not found, return helpful error
+    if (error.message?.includes('not found') || error.message?.includes('404')) {
+      return Response.json({
+        success: false,
+        error: 'Image generation model not available. Please ensure your API key has access to gemini-2.0-flash-exp.',
+        suggestion: 'Try enabling Gemini 2.0 Flash experimental features in Google AI Studio'
+      }, { status: 400 });
+    }
     return Response.json({ success: false, error: error.message }, { status: 500 });
   }
 }
