@@ -14,7 +14,7 @@ export async function POST(request) {
 
     // Try to use Veo model for video generation
     // Note: Veo access may require specific API permissions
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
     const motionPrompts = {
       subtle: {
