@@ -2,6 +2,44 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 export const maxDuration = 120;
 
+// Models to try in order of preference
+const IMAGE_MODELS = [
+  'gemini-2.0-flash-exp-image-generation',
+  'gemini-2.0-flash-exp',
+  'gemini-2.0-flash-thinking-exp',
+  'gemini-1.5-pro'
+];
+
+async function tryEnhanceWithModel(genAI, modelName, prompt, imageBase64) {
+  try {
+    const model = genAI.getGenerativeModel({
+      model: modelName,
+      generationConfig: {
+        responseModalities: ['Text', 'Image']
+      }
+    });
+
+    const result = await model.generateContent([
+      prompt,
+      { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } }
+    ]);
+
+    const response = await result.response;
+
+    if (response.candidates && response.candidates[0]) {
+      const parts = response.candidates[0].content.parts;
+      for (const part of parts) {
+        if (part.inlineData && part.inlineData.data) {
+          return { success: true, image: part.inlineData.data };
+        }
+      }
+    }
+    return { success: false, error: 'No image in response' };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
 export async function POST(request) {
   try {
     const { apiKey, images } = await request.json();
@@ -11,20 +49,9 @@ export async function POST(request) {
     }
 
     const genAI = new GoogleGenerativeAI(apiKey);
-
-    // Use Gemini 2.0 Flash with image generation capability
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash-exp',
-      generationConfig: {
-        responseModalities: ['Text', 'Image']
-      }
-    });
-
     const upscaledImages = [];
 
-    for (const img of images) {
-      try {
-        const prompt = `Enhance this image to maximum quality:
+    const enhancePrompt = `Enhance this image to maximum quality:
 
 REQUIREMENTS:
 - Increase resolution and sharpness to 4K quality
@@ -37,42 +64,64 @@ REQUIREMENTS:
 
 OUTPUT: Generate a highest possible resolution, professional photography quality version of this image.`;
 
-        const result = await model.generateContent([
-          prompt,
-          { inlineData: { mimeType: 'image/jpeg', data: img.image || img } }
-        ]);
+    // Find a working model first
+    let workingModel = null;
+    const firstImage = images[0]?.image || images[0];
 
-        const response = await result.response;
+    for (const modelName of IMAGE_MODELS) {
+      const result = await tryEnhanceWithModel(genAI, modelName, enhancePrompt, firstImage);
+      if (result.success) {
+        workingModel = modelName;
+        upscaledImages.push({
+          id: images[0].id || 0,
+          name: images[0].name || 'upscaled_0',
+          image: result.image
+        });
+        break;
+      }
+    }
 
-        if (response.candidates && response.candidates[0]) {
-          const parts = response.candidates[0].content.parts;
-          for (const part of parts) {
-            if (part.inlineData && part.inlineData.data) {
-              upscaledImages.push({
-                id: img.id || upscaledImages.length,
-                name: img.name || `upscaled_${upscaledImages.length}`,
-                image: part.inlineData.data
-              });
-              break;
-            }
-          }
-        }
+    // If no model works, return originals
+    if (!workingModel) {
+      return Response.json({
+        success: true,
+        images: images.map((img, i) => ({
+          id: img.id || i,
+          name: img.name || `original_${i}`,
+          image: img.image || img
+        })),
+        count: images.length,
+        step: 3,
+        message: 'Using original images (enhancement not available with your API key)'
+      });
+    }
 
-        // If no enhanced image, keep original
-        if (!upscaledImages.find(u => u.id === (img.id || upscaledImages.length - 1))) {
+    // Process remaining images with the working model
+    for (let i = 1; i < images.length; i++) {
+      const img = images[i];
+      try {
+        const result = await tryEnhanceWithModel(genAI, workingModel, enhancePrompt, img.image || img);
+
+        if (result.success) {
           upscaledImages.push({
-            id: img.id || upscaledImages.length,
-            name: img.name || `original_${upscaledImages.length}`,
+            id: img.id || i,
+            name: img.name || `upscaled_${i}`,
+            image: result.image
+          });
+        } else {
+          // Keep original on failure
+          upscaledImages.push({
+            id: img.id || i,
+            name: img.name || `original_${i}`,
             image: img.image || img
           });
         }
 
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 1000));
 
       } catch (err) {
-        // Keep original on error
         upscaledImages.push({
-          id: img.id || upscaledImages.length,
+          id: img.id || i,
           name: img.name || 'original',
           image: img.image || img
         });
@@ -84,7 +133,7 @@ OUTPUT: Generate a highest possible resolution, professional photography quality
       images: upscaledImages,
       count: upscaledImages.length,
       step: 3,
-      message: `Upscaled ${upscaledImages.length} images to 4K`
+      message: `Enhanced ${upscaledImages.length} images (using ${workingModel})`
     });
 
   } catch (error) {
