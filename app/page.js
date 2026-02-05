@@ -8,10 +8,10 @@ function generateSessionId() {
 }
 
 export default function Home() {
-  // Credentials
-  const [apiKey, setApiKey] = useState('');
-  const [supabaseUrl, setSupabaseUrl] = useState('');
-  const [supabaseKey, setSupabaseKey] = useState('');
+  // Credentials - auto-fill from env vars if available
+  const [apiKey, setApiKey] = useState(process.env.NEXT_PUBLIC_GEMINI_API_KEY || '');
+  const [supabaseUrl, setSupabaseUrl] = useState(process.env.NEXT_PUBLIC_SUPABASE_URL || '');
+  const [supabaseKey, setSupabaseKey] = useState(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '');
   const [sessionId, setSessionId] = useState('');
 
   // State
