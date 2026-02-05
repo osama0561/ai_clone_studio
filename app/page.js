@@ -1,10 +1,20 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useEffect } from 'react';
+
+// Generate unique session ID
+function generateSessionId() {
+  return `session_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+}
 
 export default function Home() {
-  // State
+  // Credentials
   const [apiKey, setApiKey] = useState('');
+  const [supabaseUrl, setSupabaseUrl] = useState('');
+  const [supabaseKey, setSupabaseKey] = useState('');
+  const [sessionId, setSessionId] = useState('');
+
+  // State
   const [currentStep, setCurrentStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('');
@@ -12,26 +22,79 @@ export default function Home() {
   // Step 1: Face
   const [uploadedImage, setUploadedImage] = useState(null);
   const [uploadedImageBase64, setUploadedImageBase64] = useState(null);
-  const [faceImage, setFaceImage] = useState(null);
+  const [faceImage, setFaceImage] = useState(null); // base64 for API
+  const [faceImageUrl, setFaceImageUrl] = useState(null); // URL for display
 
-  // Step 2: Dataset
+  // Step 2: Dataset - now stores URLs
   const [datasetImages, setDatasetImages] = useState([]);
-  const [datasetCount, setDatasetCount] = useState(5);
 
-  // Step 3: Upscaled
+  // Step 3: Upscaled - now stores URLs
   const [upscaledImages, setUpscaledImages] = useState([]);
 
   // Step 4: Voice
   const [script, setScript] = useState('');
   const [audioUrl, setAudioUrl] = useState(null);
-  const [audioBase64, setAudioBase64] = useState(null);
 
   // Step 5: Motion
   const [selectedImage, setSelectedImage] = useState(null);
   const [motionType, setMotionType] = useState('subtle');
   const [videoData, setVideoData] = useState(null);
 
-  const audioRef = useRef(null);
+  // Initialize session ID
+  useEffect(() => {
+    if (!sessionId) {
+      setSessionId(generateSessionId());
+    }
+  }, [sessionId]);
+
+  // Helper: Upload single image to Supabase
+  const uploadToSupabase = async (base64, name) => {
+    if (!supabaseUrl || !supabaseKey) return null;
+
+    try {
+      const res = await fetch('/api/storage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'upload',
+          supabaseUrl,
+          supabaseKey,
+          sessionId,
+          imageName: name,
+          imageBase64: base64
+        })
+      });
+      const data = await res.json();
+      return data.success ? data.url : null;
+    } catch (err) {
+      console.error('Upload error:', err);
+      return null;
+    }
+  };
+
+  // Helper: Upload batch of images to Supabase
+  const uploadBatchToSupabase = async (images) => {
+    if (!supabaseUrl || !supabaseKey) return images;
+
+    try {
+      const res = await fetch('/api/storage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'uploadBatch',
+          supabaseUrl,
+          supabaseKey,
+          sessionId,
+          images
+        })
+      });
+      const data = await res.json();
+      return data.success ? data.images : [];
+    } catch (err) {
+      console.error('Batch upload error:', err);
+      return [];
+    }
+  };
 
   // Handle image upload
   const handleImageUpload = (e) => {
@@ -64,10 +127,23 @@ export default function Home() {
 
       if (data.success) {
         setFaceImage(data.image);
-        setStatus('✅ تم إنشاء الوجه!');
+
+        // Upload to Supabase if configured
+        if (supabaseUrl && supabaseKey) {
+          setStatus('جاري رفع الصورة إلى Supabase...');
+          const url = await uploadToSupabase(data.image, 'face_01');
+          if (url) {
+            setFaceImageUrl(url);
+            setStatus('✅ تم إنشاء الوجه وحفظه!');
+          } else {
+            setStatus('✅ تم إنشاء الوجه! (فشل الرفع إلى Supabase)');
+          }
+        } else {
+          setStatus('✅ تم إنشاء الوجه! (أضف Supabase للحفظ الدائم)');
+        }
         setCurrentStep(2);
       } else {
-        setStatus(`❌ ${data.error}`);
+        setStatus(`❌ ${data.error || data.suggestion || 'حدث خطأ'}`);
       }
     } catch (err) {
       setStatus(`❌ ${err.message}`);
@@ -86,16 +162,37 @@ export default function Home() {
       const res = await fetch('/api/step2-dataset', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey, imageBase64: faceImage, count: datasetCount })
+        body: JSON.stringify({ apiKey, imageBase64: faceImage, count: 5 })
       });
       const data = await res.json();
 
-      if (data.success) {
-        setDatasetImages(data.images);
-        setStatus(`✅ تم إنشاء ${data.count} صورة!`);
+      if (data.success && data.images) {
+        // Upload to Supabase if configured
+        if (supabaseUrl && supabaseKey) {
+          setStatus(`جاري رفع ${data.images.length} صورة إلى Supabase...`);
+          const uploadedImages = await uploadBatchToSupabase(data.images);
+          if (uploadedImages.length > 0) {
+            setDatasetImages(uploadedImages);
+            setStatus(`✅ تم إنشاء ورفع ${uploadedImages.length} صورة!`);
+          } else {
+            // Fallback to base64 with URLs
+            setDatasetImages(data.images.map(img => ({
+              ...img,
+              url: `data:image/jpeg;base64,${img.image}`
+            })));
+            setStatus(`✅ تم إنشاء ${data.count} صورة! (فشل الرفع)`);
+          }
+        } else {
+          // No Supabase - use data URLs
+          setDatasetImages(data.images.map(img => ({
+            ...img,
+            url: `data:image/jpeg;base64,${img.image}`
+          })));
+          setStatus(`✅ تم إنشاء ${data.count} صورة! (أضف Supabase للحفظ)`);
+        }
         setCurrentStep(3);
       } else {
-        setStatus(`❌ ${data.error}`);
+        setStatus(`❌ ${data.error || 'لم يتم إنشاء صور'}`);
       }
     } catch (err) {
       setStatus(`❌ ${err.message}`);
@@ -111,16 +208,50 @@ export default function Home() {
     setStatus('جاري تحسين الدقة إلى 4K...');
 
     try {
+      // Prepare images - use base64 data if available
+      const imagesToUpscale = datasetImages.map(img => ({
+        id: img.id,
+        name: `upscaled_${img.name}`,
+        image: img.image || (img.url?.startsWith('data:') ? img.url.split(',')[1] : null)
+      })).filter(img => img.image);
+
+      if (imagesToUpscale.length === 0) {
+        setStatus('⚠️ لا توجد صور للتحسين - استخدم الصور الحالية');
+        setUpscaledImages(datasetImages);
+        setCurrentStep(4);
+        setLoading(false);
+        return;
+      }
+
       const res = await fetch('/api/step3-upscale', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey, images: datasetImages })
+        body: JSON.stringify({ apiKey, images: imagesToUpscale })
       });
       const data = await res.json();
 
-      if (data.success) {
-        setUpscaledImages(data.images);
-        setStatus(`✅ تم تحسين ${data.count} صورة!`);
+      if (data.success && data.images) {
+        // Upload to Supabase if configured
+        if (supabaseUrl && supabaseKey) {
+          setStatus(`جاري رفع ${data.images.length} صورة محسنة...`);
+          const uploadedImages = await uploadBatchToSupabase(data.images);
+          if (uploadedImages.length > 0) {
+            setUpscaledImages(uploadedImages);
+            setStatus(`✅ تم تحسين ورفع ${uploadedImages.length} صورة!`);
+          } else {
+            setUpscaledImages(data.images.map(img => ({
+              ...img,
+              url: `data:image/jpeg;base64,${img.image}`
+            })));
+            setStatus(`✅ تم تحسين ${data.count} صورة!`);
+          }
+        } else {
+          setUpscaledImages(data.images.map(img => ({
+            ...img,
+            url: `data:image/jpeg;base64,${img.image}`
+          })));
+          setStatus(`✅ تم تحسين ${data.count} صورة!`);
+        }
         setCurrentStep(4);
       } else {
         setStatus(`❌ ${data.error}`);
@@ -143,20 +274,12 @@ export default function Home() {
       utterance.lang = 'ar-SA';
       utterance.rate = 0.9;
 
-      // Find Arabic voice
       const voices = speechSynthesis.getVoices();
       const arabicVoice = voices.find(v => v.lang.includes('ar'));
       if (arabicVoice) utterance.voice = arabicVoice;
 
-      utterance.onend = () => {
-        setStatus('✅ تم توليد الصوت!');
-        setCurrentStep(5);
-        setLoading(false);
-      };
-
       speechSynthesis.speak(utterance);
 
-      // For demo, just mark as complete
       setTimeout(() => {
         setAudioUrl('generated');
         setStatus('✅ تم توليد الصوت! (Browser TTS)');
@@ -172,7 +295,7 @@ export default function Home() {
 
   // Step 5: Generate Motion Video
   const generateMotion = async () => {
-    const imageToUse = selectedImage || (upscaledImages[0]?.image) || faceImage;
+    const imageToUse = selectedImage || upscaledImages[0]?.image || datasetImages[0]?.image || faceImage;
     if (!imageToUse) return setStatus('اختر صورة أولاً');
 
     setLoading(true);
@@ -189,11 +312,10 @@ export default function Home() {
       if (data.success && data.video) {
         setVideoData(data.video);
         setStatus('✅ تم توليد الفيديو!');
-        setCurrentStep(6);
       } else {
-        setStatus(`⚠️ ${data.message || data.suggestion}`);
-        setCurrentStep(6); // Move to assembly anyway
+        setStatus(`⚠️ ${data.message || data.suggestion || 'VEO غير متاح'}`);
       }
+      setCurrentStep(6);
     } catch (err) {
       setStatus(`⚠️ VEO غير متاح - استخدم الصور مع أداة خارجية`);
       setCurrentStep(6);
@@ -201,18 +323,23 @@ export default function Home() {
     setLoading(false);
   };
 
-  // Download helper
-  const downloadImage = (base64, filename) => {
+  // Download helper for URLs
+  const downloadImage = (url, filename) => {
     const link = document.createElement('a');
-    link.href = `data:image/jpeg;base64,${base64}`;
+    link.href = url;
     link.download = filename;
+    link.target = '_blank';
     link.click();
   };
 
   const downloadAllImages = () => {
     const images = upscaledImages.length > 0 ? upscaledImages : datasetImages;
     images.forEach((img, i) => {
-      setTimeout(() => downloadImage(img.image, `clone_${i + 1}.jpg`), i * 500);
+      setTimeout(() => {
+        if (img.url) {
+          downloadImage(img.url, `clone_${img.name || i + 1}.jpg`);
+        }
+      }, i * 500);
     });
   };
 
@@ -232,10 +359,11 @@ export default function Home() {
       <div className="text-center mb-8">
         <h1 className="text-4xl md:text-5xl font-bold mb-2">🎬 NICOLA.AI Clone Studio</h1>
         <p className="text-gray-400">حوّل صورتك إلى استنساخ AI كامل</p>
+        {sessionId && <p className="text-xs text-gray-600 mt-1">Session: {sessionId}</p>}
       </div>
 
-      {/* API Key */}
-      <div className="card mb-6">
+      {/* API Keys */}
+      <div className="card mb-6 space-y-3">
         <div className="flex gap-4 items-center">
           <span>🔑</span>
           <input
@@ -246,6 +374,27 @@ export default function Home() {
             className="flex-1 p-3 rounded-lg bg-darker border border-gray-700 text-white"
           />
           {apiKey && <span className="text-green-400">✅</span>}
+        </div>
+
+        <div className="border-t border-gray-700 pt-3">
+          <p className="text-sm text-gray-400 mb-2">🗄️ Supabase Storage (اختياري - للحفظ الدائم)</p>
+          <div className="grid md:grid-cols-2 gap-2">
+            <input
+              type="text"
+              value={supabaseUrl}
+              onChange={(e) => setSupabaseUrl(e.target.value)}
+              placeholder="Supabase URL (https://xxx.supabase.co)"
+              className="p-2 rounded-lg bg-darker border border-gray-700 text-white text-sm"
+            />
+            <input
+              type="password"
+              value={supabaseKey}
+              onChange={(e) => setSupabaseKey(e.target.value)}
+              placeholder="Supabase Anon Key"
+              className="p-2 rounded-lg bg-darker border border-gray-700 text-white text-sm"
+            />
+          </div>
+          {supabaseUrl && supabaseKey && <span className="text-xs text-green-400">✅ Supabase متصل</span>}
         </div>
       </div>
 
@@ -302,10 +451,14 @@ export default function Home() {
                 )}
               </div>
               <div>
-                {faceImage && (
+                {(faceImageUrl || faceImage) && (
                   <div>
                     <p className="text-sm text-gray-400 mb-2">الوجه المُنشأ:</p>
-                    <img src={`data:image/jpeg;base64,${faceImage}`} alt="Face" className="w-48 h-48 object-cover rounded-lg" />
+                    <img
+                      src={faceImageUrl || `data:image/jpeg;base64,${faceImage}`}
+                      alt="Face"
+                      className="w-48 h-48 object-cover rounded-lg"
+                    />
                   </div>
                 )}
               </div>
@@ -325,32 +478,36 @@ export default function Home() {
         {currentStep === 2 && (
           <div>
             <h2 className="text-2xl font-bold mb-4">📸 الخطوة 2: بناء مجموعة البيانات</h2>
-            <p className="text-gray-400 mb-4">إنشاء 10 صور متنوعة بأوضاع وزوايا مختلفة</p>
+            <p className="text-gray-400 mb-4">إنشاء صور متنوعة بأوضاع وزوايا مختلفة</p>
 
-            <div className="mb-4">
-              <label className="block text-sm mb-2">عدد الصور: {datasetCount}</label>
-              <input
-                type="range"
-                min="3"
-                max="10"
-                value={datasetCount}
-                onChange={(e) => setDatasetCount(parseInt(e.target.value))}
-                className="w-full"
-              />
-            </div>
+            {/* Show existing face */}
+            {(faceImageUrl || faceImage) && (
+              <div className="mb-4">
+                <p className="text-sm text-gray-400 mb-2">الصورة الأساسية:</p>
+                <img
+                  src={faceImageUrl || `data:image/jpeg;base64,${faceImage}`}
+                  alt="Base face"
+                  className="w-32 h-32 object-cover rounded-lg"
+                />
+              </div>
+            )}
 
+            {/* Show generated dataset */}
             {datasetImages.length > 0 && (
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-4">
-                {datasetImages.map((img, i) => (
-                  <div key={i} className="relative group">
-                    <img
-                      src={`data:image/jpeg;base64,${img.image}`}
-                      alt={img.name}
-                      className="w-full aspect-square object-cover rounded-lg"
-                    />
-                    <span className="absolute bottom-1 left-1 text-xs bg-black/70 px-2 rounded">{img.name}</span>
-                  </div>
-                ))}
+              <div className="mb-4">
+                <p className="text-sm text-gray-400 mb-2">الصور المُنشأة ({datasetImages.length}):</p>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                  {datasetImages.map((img, i) => (
+                    <div key={i} className="relative group">
+                      <img
+                        src={img.url}
+                        alt={img.name}
+                        className="w-full aspect-square object-cover rounded-lg"
+                      />
+                      <span className="absolute bottom-1 left-1 text-xs bg-black/70 px-2 rounded">{img.name}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 
@@ -359,7 +516,7 @@ export default function Home() {
               disabled={loading || !faceImage}
               className="w-full py-3 rounded-lg font-bold bg-primary text-white disabled:bg-gray-700"
             >
-              {loading ? 'جاري البناء...' : '📸 بناء المجموعة'}
+              {loading ? 'جاري البناء...' : '📸 بناء المجموعة (5 صور)'}
             </button>
           </div>
         )}
@@ -370,16 +527,37 @@ export default function Home() {
             <h2 className="text-2xl font-bold mb-4">✨ الخطوة 3: تحسين الدقة إلى 4K</h2>
             <p className="text-gray-400 mb-4">تحسين جودة الصور للفيديو</p>
 
+            {/* Show dataset images */}
+            {datasetImages.length > 0 && (
+              <div className="mb-4">
+                <p className="text-sm text-gray-400 mb-2">الصور الحالية ({datasetImages.length}):</p>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                  {datasetImages.map((img, i) => (
+                    <img
+                      key={i}
+                      src={img.url}
+                      alt={img.name}
+                      className="w-full aspect-square object-cover rounded-lg"
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Show upscaled images */}
             {upscaledImages.length > 0 && (
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-4">
-                {upscaledImages.map((img, i) => (
-                  <img
-                    key={i}
-                    src={`data:image/jpeg;base64,${img.image}`}
-                    alt={`Upscaled ${i}`}
-                    className="w-full aspect-square object-cover rounded-lg border-2 border-green-500"
-                  />
-                ))}
+              <div className="mb-4">
+                <p className="text-sm text-green-400 mb-2">الصور المحسنة ({upscaledImages.length}):</p>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                  {upscaledImages.map((img, i) => (
+                    <img
+                      key={i}
+                      src={img.url}
+                      alt={`Upscaled ${i}`}
+                      className="w-full aspect-square object-cover rounded-lg border-2 border-green-500"
+                    />
+                  ))}
+                </div>
               </div>
             )}
 
@@ -442,14 +620,14 @@ export default function Home() {
               </select>
             </div>
 
-            {upscaledImages.length > 0 && (
+            {(upscaledImages.length > 0 || datasetImages.length > 0) && (
               <div className="mb-4">
                 <label className="block text-sm mb-2">اختر صورة:</label>
                 <div className="grid grid-cols-5 gap-2">
-                  {upscaledImages.map((img, i) => (
+                  {(upscaledImages.length > 0 ? upscaledImages : datasetImages).map((img, i) => (
                     <img
                       key={i}
-                      src={`data:image/jpeg;base64,${img.image}`}
+                      src={img.url}
                       alt={`Select ${i}`}
                       className={`w-full aspect-square object-cover rounded-lg cursor-pointer ${
                         selectedImage === img.image ? 'ring-4 ring-primary' : ''
@@ -477,12 +655,30 @@ export default function Home() {
             <h2 className="text-2xl font-bold mb-4">📦 الخطوة 6: التجميع النهائي</h2>
             <p className="text-gray-400 mb-4">حمّل الأصول وأنشئ الفيديو النهائي</p>
 
+            {/* Show all generated images */}
+            {(upscaledImages.length > 0 || datasetImages.length > 0) && (
+              <div className="mb-6">
+                <p className="text-sm text-gray-400 mb-2">الصور المتاحة للتحميل:</p>
+                <div className="grid grid-cols-3 md:grid-cols-5 gap-4 mb-4">
+                  {(upscaledImages.length > 0 ? upscaledImages : datasetImages).map((img, i) => (
+                    <a key={i} href={img.url} download={`clone_${img.name || i}.jpg`} target="_blank">
+                      <img
+                        src={img.url}
+                        alt={img.name}
+                        className="w-full aspect-square object-cover rounded-lg hover:ring-2 hover:ring-primary cursor-pointer"
+                      />
+                    </a>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="grid md:grid-cols-2 gap-6">
               <div className="p-4 bg-darker rounded-lg">
                 <h3 className="font-bold mb-3">📥 تحميل الأصول</h3>
                 <button
                   onClick={downloadAllImages}
-                  className="w-full py-2 mb-2 rounded bg-blue-600 text-white"
+                  className="w-full py-2 mb-2 rounded bg-blue-600 text-white hover:bg-blue-700"
                 >
                   تحميل كل الصور ({upscaledImages.length || datasetImages.length})
                 </button>
@@ -490,7 +686,7 @@ export default function Home() {
                   <a
                     href={`data:video/mp4;base64,${videoData}`}
                     download="motion.mp4"
-                    className="block w-full py-2 text-center rounded bg-purple-600 text-white"
+                    className="block w-full py-2 text-center rounded bg-purple-600 text-white hover:bg-purple-700"
                   >
                     تحميل الفيديو
                   </a>
@@ -500,10 +696,10 @@ export default function Home() {
               <div className="p-4 bg-darker rounded-lg">
                 <h3 className="font-bold mb-3">🛠️ أدوات التجميع</h3>
                 <ul className="text-sm text-gray-400 space-y-2">
-                  <li>• <a href="https://www.capcut.com" target="_blank" className="text-primary">CapCut</a> - مجاني وسهل</li>
-                  <li>• <a href="https://www.canva.com" target="_blank" className="text-primary">Canva</a> - تصميم + فيديو</li>
-                  <li>• <a href="https://runwayml.com" target="_blank" className="text-primary">Runway</a> - AI متقدم</li>
-                  <li>• <a href="https://klingai.com" target="_blank" className="text-primary">Kling AI</a> - حركة واقعية</li>
+                  <li>• <a href="https://www.capcut.com" target="_blank" className="text-primary hover:underline">CapCut</a> - مجاني وسهل</li>
+                  <li>• <a href="https://www.canva.com" target="_blank" className="text-primary hover:underline">Canva</a> - تصميم + فيديو</li>
+                  <li>• <a href="https://runwayml.com" target="_blank" className="text-primary hover:underline">Runway</a> - AI متقدم</li>
+                  <li>• <a href="https://klingai.com" target="_blank" className="text-primary hover:underline">Kling AI</a> - حركة واقعية</li>
                 </ul>
               </div>
             </div>
@@ -516,10 +712,24 @@ export default function Home() {
         )}
       </div>
 
+      {/* Supabase Setup Info */}
+      {!supabaseUrl && !supabaseKey && (
+        <div className="card mt-6 bg-yellow-900/20 border border-yellow-700">
+          <h3 className="font-bold mb-2">⚠️ إعداد Supabase (موصى به)</h3>
+          <p className="text-sm text-gray-400 mb-3">لحفظ الصور بشكل دائم وتحميلها لاحقاً:</p>
+          <ol className="text-sm text-gray-400 list-decimal list-inside space-y-1">
+            <li>أنشئ مشروع مجاني في <a href="https://supabase.com" target="_blank" className="text-primary">supabase.com</a></li>
+            <li>اذهب إلى Storage وأنشئ bucket باسم <code className="bg-black px-1 rounded">ai-clone-images</code></li>
+            <li>اجعل الـ bucket عام (public)</li>
+            <li>انسخ Project URL و anon key من Settings → API</li>
+          </ol>
+        </div>
+      )}
+
       {/* Footer */}
       <div className="text-center mt-8 text-gray-500 text-sm">
         <p>Based on NICOLA.AI Workflow</p>
-        <a href="https://github.com/osama0561/ai_clone_studio" target="_blank" className="text-primary">GitHub</a>
+        <a href="https://github.com/osama0561/ai_clone_studio" target="_blank" className="text-primary hover:underline">GitHub</a>
       </div>
     </main>
   );
