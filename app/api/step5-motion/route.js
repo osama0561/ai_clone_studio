@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 
 export const maxDuration = 300; // 5 minutes for video generation
 
@@ -10,110 +10,102 @@ export async function POST(request) {
       return Response.json({ success: false, error: 'API key and image required' }, { status: 400 });
     }
 
-    const genAI = new GoogleGenerativeAI(apiKey);
+    const ai = new GoogleGenAI({ apiKey });
 
-    // Try to use Veo model for video generation
-    // Note: Veo access may require specific API permissions
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash-exp',
-      generationConfig: {
-        responseModalities: ['Text', 'Image']
+    const motionPrompts = {
+      subtle: "A person with subtle natural motion, gentle breathing, soft micro head movements, blinking naturally. Static camera, cinematic lighting.",
+      talking: "A person speaking naturally to camera with expressive gestures, head nods, engaging facial expressions. Slight camera drift.",
+      cinematic: "Cinematic slow motion shot of a person with dramatic lighting, confident slow turn, dramatic pause. Slow dolly in camera movement.",
+      walking: "A person walking naturally toward camera with confident stride, arms swinging naturally. Tracking camera movement."
+    };
+
+    const prompt = motionPrompts[motionType] || motionPrompts.subtle;
+
+    console.log('Starting VEO video generation...');
+
+    // Start video generation with VEO 3.1
+    let operation = await ai.models.generateVideos({
+      model: 'veo-3.1-generate-preview',
+      prompt: prompt,
+      image: {
+        imageBytes: imageBase64,
+        mimeType: 'image/jpeg'
+      },
+      config: {
+        aspectRatio: '9:16', // Portrait for social media
+        numberOfVideos: 1
       }
     });
 
-    const motionPrompts = {
-      subtle: {
-        description: "Subtle natural motion with gentle breathing and micro head movements",
-        camera: "static",
-        movement: "natural breathing, subtle blink, very gentle head micro-movement"
-      },
-      talking: {
-        description: "Person speaking naturally with appropriate gestures",
-        camera: "static with slight drift",
-        movement: "talking motion, natural gestures, head nods, expressive face"
-      },
-      cinematic: {
-        description: "Cinematic slow motion with dramatic lighting",
-        camera: "slow dolly in",
-        movement: "slow confident turn, dramatic pause, cinematic presence"
-      },
-      walking: {
-        description: "Person walking naturally toward camera",
-        camera: "tracking",
-        movement: "natural walking gait, arms swinging, confident stride"
-      }
-    };
+    console.log('Video generation started, polling for completion...');
 
-    const motion = motionPrompts[motionType] || motionPrompts.subtle;
+    // Poll until the video is ready (max 4 minutes)
+    const maxWaitTime = 240000; // 4 minutes
+    const pollInterval = 5000; // 5 seconds
+    let elapsed = 0;
 
-    const prompt = `Generate a 5-second video of this person with the following specifications:
+    while (!operation.done && elapsed < maxWaitTime) {
+      await new Promise(r => setTimeout(r, pollInterval));
+      elapsed += pollInterval;
 
-IDENTITY: This EXACT person must appear in the video - same face, same features.
+      // Refresh operation status
+      operation = await ai.operations.get({ name: operation.name });
+      console.log(`Polling... elapsed: ${elapsed / 1000}s, done: ${operation.done}`);
+    }
 
-MOTION: ${motion.description}
-- Camera: ${motion.camera}
-- Subject movement: ${motion.movement}
+    if (operation.done && operation.response?.generatedVideos?.length > 0) {
+      const video = operation.response.generatedVideos[0].video;
 
-TECHNICAL:
-- Cinematic quality, 24fps
-- Natural lighting
-- Smooth motion, no artifacts
-- Realistic human movement
-- Professional video quality
+      return Response.json({
+        success: true,
+        video: video.videoBytes || video,
+        mimeType: video.mimeType || 'video/mp4',
+        step: 5,
+        message: 'Motion video generated with VEO 3.1!'
+      });
+    }
 
-Create a short video clip of this person with natural, lifelike motion.`;
+    // If operation timed out or failed
+    return Response.json({
+      success: false,
+      step: 5,
+      message: operation.done ? 'Video generation completed but no video returned' : 'Video generation timed out',
+      suggestion: 'VEO may be processing. Try again or use external tools like Kling AI or Runway.'
+    });
 
-    const result = await model.generateContent([
-      prompt,
-      { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } }
-    ]);
+  } catch (error) {
+    console.error('VEO Error:', error);
 
-    const response = await result.response;
+    // Check for specific errors
+    if (error.message?.includes('not found') || error.message?.includes('404')) {
+      return Response.json({
+        success: false,
+        error: 'VEO model not available',
+        suggestion: 'VEO 3.1 requires API access. Use Kling AI, Runway, or Pika Labs for video generation.',
+        externalTools: [
+          { name: 'Kling AI', url: 'https://klingai.com' },
+          { name: 'Runway', url: 'https://runwayml.com' },
+          { name: 'Pika Labs', url: 'https://pika.art' }
+        ]
+      }, { status: 400 });
+    }
 
-    // Check for video in response
-    if (response.candidates && response.candidates[0]) {
-      const parts = response.candidates[0].content.parts;
-      for (const part of parts) {
-        // Check for video data
-        if (part.inlineData) {
-          const mimeType = part.inlineData.mimeType || '';
-          if (mimeType.includes('video') || part.inlineData.data) {
-            return Response.json({
-              success: true,
-              video: part.inlineData.data,
-              mimeType: mimeType,
-              step: 5,
-              message: 'Motion video generated'
-            });
-          }
-        }
-      }
-
-      // If text response, return it
-      const textPart = parts.find(p => p.text);
-      if (textPart) {
-        return Response.json({
-          success: false,
-          step: 5,
-          message: 'Video generation not available with current model',
-          note: textPart.text,
-          suggestion: 'VEO video generation requires specific API access. Use the image for manual video creation.'
-        });
-      }
+    if (error.message?.includes('permission') || error.message?.includes('quota')) {
+      return Response.json({
+        success: false,
+        error: 'VEO access requires paid API tier',
+        suggestion: 'VEO is in paid preview. Use external video tools for now.',
+        externalTools: [
+          { name: 'Kling AI', url: 'https://klingai.com' },
+          { name: 'Runway', url: 'https://runwayml.com' }
+        ]
+      }, { status: 403 });
     }
 
     return Response.json({
       success: false,
-      step: 5,
-      message: 'Video generation requires VEO API access',
-      suggestion: 'Export images and use external video tools like Kling, Runway, or CapCut'
-    });
-
-  } catch (error) {
-    return Response.json({
-      success: false,
       error: error.message,
-      suggestion: 'VEO may not be available. Use images with external video tools.'
+      suggestion: 'VEO may not be available with your API key. Use external video tools.'
     }, { status: 500 });
   }
 }
